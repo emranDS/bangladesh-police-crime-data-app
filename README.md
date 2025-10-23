@@ -16,3 +16,6 @@ This app is deployed on Render.com and uses:
 
 ## Data Source
 Bangladesh Police Crime Statistics (2021-2025)
+
+## Live Dashboard (give it a try 😉):
+https://bangladesh-police-crime-data.onrender.com/
