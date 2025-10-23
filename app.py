@@ -9,10 +9,11 @@ import os
 
 # Initialize the app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-server = app.server
+server = app.server  # Required for Render
 
-# Load data
-print("Loading data...")
+print("Loading Bangladesh Crime Data...")
+
+# Load and prepare data
 df = pd.read_csv('bangladesh_police_crime_data_2021_2025.csv')
 
 # Data preprocessing
@@ -29,7 +30,7 @@ crime_columns = ['Dacoity', 'Robbery', 'Murder', 'Speedy_Trial', 'Riot',
 # Police units
 police_units = sorted(df['Unit'].unique())
 
-print("Data loaded successfully!")
+print(f"Data loaded successfully! {len(df)} records, {len(police_units)} police units")
 
 # Define the layout
 app.layout = dbc.Container([
@@ -54,6 +55,7 @@ app.layout = dbc.Container([
                 options=[{'label': unit, 'value': unit} for unit in police_units],
                 value=['DMP', 'CMP'],
                 multi=True,
+                placeholder="Select police units..."
             )
         ], width=4),
         
@@ -76,6 +78,7 @@ app.layout = dbc.Container([
                 options=[{'label': crime, 'value': crime} for crime in crime_columns],
                 value=['Murder', 'Robbery', 'Narcotics', 'Theft', 'Woman_Child_Repression'],
                 multi=True,
+                placeholder="Select crime types..."
             )
         ], width=4)
     ], className="mb-4 p-3", style={'backgroundColor': '#f8f9fa', 'borderRadius': '10px'}),
@@ -123,7 +126,7 @@ app.layout = dbc.Container([
         ], width=3)
     ], className="mb-4"),
     
-    # Tabs
+    # Tabs for different analyses
     dcc.Tabs(id="tabs", value='tab-overview', children=[
         dcc.Tab(label='📊 Overview Dashboard', value='tab-overview'),
         dcc.Tab(label='📈 Crime Trends', value='tab-trends'),
@@ -131,10 +134,11 @@ app.layout = dbc.Container([
         dcc.Tab(label='📋 Raw Data', value='tab-data')
     ]),
     
+    # Tab content
     html.Div(id='tab-content', className="mt-4")
-], fluid=True)
+], fluid=True, style={'padding': '20px'})
 
-# Chart functions
+# Chart creation functions
 def create_crime_pie_chart(filtered_df, selected_crimes):
     if not selected_crimes:
         selected_crimes = crime_columns[:5]
@@ -168,8 +172,8 @@ def create_top_units_chart(filtered_df):
         x=unit_totals.values,
         y=unit_totals.index,
         orientation='h',
-        title='Top 10 Police Units',
-        labels={'x': 'Total Cases', 'y': 'Unit'},
+        title='Top 10 Police Units by Total Cases',
+        labels={'x': 'Total Cases', 'y': 'Police Unit'},
         color=unit_totals.values,
         color_continuous_scale='Viridis'
     )
@@ -188,13 +192,14 @@ def create_crime_trends_chart(filtered_df, selected_crimes):
             x=monthly_crimes['Date'],
             y=monthly_crimes[crime],
             name=crime,
-            mode='lines+markers'
+            mode='lines+markers',
+            hovertemplate=f'{crime}: %{{y}}<extra></extra>'
         ))
     
     fig.update_layout(
-        title='Crime Trends Over Time',
+        title='Crime Type Trends Over Time',
         xaxis_title='Date',
-        yaxis_title='Cases',
+        yaxis_title='Number of Cases',
         hovermode='x unified',
         height=500
     )
@@ -206,7 +211,7 @@ def create_seasonal_patterns_chart(filtered_df):
         monthly_avg,
         x='Month_Num',
         y='Total_Cases',
-        title='Seasonal Patterns',
+        title='Seasonal Crime Patterns',
         labels={'Month_Num': 'Month', 'Total_Cases': 'Average Cases'}
     )
     fig.update_traces(mode='lines+markers', line=dict(width=3))
@@ -217,7 +222,55 @@ def create_seasonal_patterns_chart(filtered_df):
     fig.update_layout(height=400)
     return fig
 
-# Callbacks
+def create_correlation_heatmap(filtered_df, selected_crimes):
+    if not selected_crimes:
+        selected_crimes = crime_columns[:6]
+    
+    correlation_matrix = filtered_df[selected_crimes].corr()
+    
+    fig = px.imshow(
+        correlation_matrix,
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale='RdBu_r',
+        title='Correlation Between Crime Types'
+    )
+    fig.update_layout(height=500)
+    return fig
+
+def create_unit_comparison_chart(filtered_df, selected_crimes):
+    if not selected_crimes:
+        selected_crimes = crime_columns[:4]
+    
+    # Get top units
+    top_units = filtered_df.groupby('Unit')['Total_Cases'].sum().nlargest(6).index
+    unit_data = filtered_df[filtered_df['Unit'].isin(top_units)]
+    
+    # Prepare data for grouped bar chart
+    comparison_data = []
+    for unit in top_units:
+        unit_crimes = unit_data[unit_data['Unit'] == unit][selected_crimes].sum()
+        for crime in selected_crimes:
+            comparison_data.append({
+                'Unit': unit,
+                'Crime_Type': crime,
+                'Cases': unit_crimes[crime]
+            })
+    
+    comp_df = pd.DataFrame(comparison_data)
+    
+    fig = px.bar(
+        comp_df,
+        x='Unit',
+        y='Cases',
+        color='Crime_Type',
+        title='Crime Comparison Across Police Units',
+        barmode='group'
+    )
+    fig.update_layout(height=400)
+    return fig
+
+# Callbacks for summary cards
 @app.callback(
     [Output('total-cases', 'children'),
      Output('avg-monthly', 'children'),
@@ -234,7 +287,8 @@ def update_summary_cards(selected_units, year_range):
     ]
     
     total_cases = filtered_df['Total_Cases'].sum()
-    avg_monthly = filtered_df.groupby(['Year', 'Month'])['Total_Cases'].sum().mean()
+    monthly_totals = filtered_df.groupby(['Year', 'Month'])['Total_Cases'].sum()
+    avg_monthly = monthly_totals.mean() if not monthly_totals.empty else 0
     peak_crime = filtered_df[crime_columns].sum().idxmax()
     total_units = len(filtered_df['Unit'].unique())
     
@@ -245,6 +299,7 @@ def update_summary_cards(selected_units, year_range):
         f"{total_units}"
     )
 
+# Callback for tab content
 @app.callback(
     Output('tab-content', 'children'),
     [Input('tabs', 'value'),
@@ -260,67 +315,109 @@ def render_tab_content(selected_tab, selected_units, year_range, selected_crimes
     ]
     
     if selected_tab == 'tab-overview':
-        return dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        dcc.Graph(figure=create_crime_pie_chart(filtered_df, selected_crimes))
-                    ])
-                ])
-            ], width=6),
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        dcc.Graph(figure=create_monthly_trend_chart(filtered_df))
-                    ])
-                ])
-            ], width=6)
-        ])
-    
+        return render_overview_tab(filtered_df, selected_crimes)
     elif selected_tab == 'tab-trends':
-        return dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        dcc.Graph(figure=create_crime_trends_chart(filtered_df, selected_crimes))
-                    ])
-                ])
-            ], width=12)
-        ])
-    
+        return render_trends_tab(filtered_df, selected_crimes)
     elif selected_tab == 'tab-analysis':
-        return dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        dcc.Graph(figure=create_seasonal_patterns_chart(filtered_df))
-                    ])
-                ])
-            ], width=12)
-        ])
-    
+        return render_analysis_tab(filtered_df, selected_crimes)
     elif selected_tab == 'tab-data':
-        display_df = filtered_df.head(50)
-        return dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardHeader("Filtered Data (First 50 rows)"),
-                    dbc.CardBody([
-                        html.Div([
-                            html.P(f"Showing {len(display_df)} rows", className="text-muted"),
-                            dbc.Table.from_dataframe(
-                                display_df.round(2),
-                                striped=True,
-                                bordered=True,
-                                hover=True,
-                                responsive=True,
-                                style={'maxHeight': '500px', 'overflowY': 'auto', 'fontSize': '12px'}
-                            )
-                        ])
+        return render_data_tab(filtered_df)
+
+def render_overview_tab(filtered_df, selected_crimes):
+    return dbc.Row([
+        # Left column
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("📊 Crime Type Distribution"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_crime_pie_chart(filtered_df, selected_crimes))
+                ])
+            ], className="mb-4"),
+            
+            dbc.Card([
+                dbc.CardHeader("📈 Monthly Trend"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_monthly_trend_chart(filtered_df))
+                ])
+            ])
+        ], width=6),
+        
+        # Right column
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("🏆 Top Police Units"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_top_units_chart(filtered_df))
+                ])
+            ], className="mb-4"),
+            
+            dbc.Card([
+                dbc.CardHeader("📅 Seasonal Patterns"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_seasonal_patterns_chart(filtered_df))
+                ])
+            ])
+        ], width=6)
+    ])
+
+def render_trends_tab(filtered_df, selected_crimes):
+    return dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("📈 Crime Trends Over Time"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_crime_trends_chart(filtered_df, selected_crimes))
+                ])
+            ])
+        ], width=12)
+    ])
+
+def render_analysis_tab(filtered_df, selected_crimes):
+    return dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("🔗 Crime Correlation Heatmap"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_correlation_heatmap(filtered_df, selected_crimes))
+                ])
+            ])
+        ], width=6),
+        
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("⚖️ Unit Comparison"),
+                dbc.CardBody([
+                    dcc.Graph(figure=create_unit_comparison_chart(filtered_df, selected_crimes))
+                ])
+            ])
+        ], width=6)
+    ])
+
+def render_data_tab(filtered_df):
+    # Display first 100 rows
+    display_df = filtered_df.head(100)
+    
+    return dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("📋 Filtered Data (First 100 rows)"),
+                dbc.CardBody([
+                    html.Div([
+                        html.P(f"Showing {len(display_df)} rows", className="text-muted"),
+                        dbc.Table.from_dataframe(
+                            display_df.round(2),
+                            striped=True,
+                            bordered=True,
+                            hover=True,
+                            responsive=True,
+                            style={'maxHeight': '500px', 'overflowY': 'auto', 'fontSize': '12px'}
+                        )
                     ])
                 ])
-            ], width=12)
-        ])
+            ])
+        ], width=12)
+    ])
 
+# Run the app
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8050)))
